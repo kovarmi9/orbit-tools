@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - sp3-reader
     tags:
       - 'v*'
 
