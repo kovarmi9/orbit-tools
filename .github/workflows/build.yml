@@ -1,0 +1,163 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  # ── Windows ─────────────────────────────────────────────────
+  build-windows:
+    if: |
+      contains(github.event.head_commit.message, '[Build]') ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build
+        run: pyinstaller --onefile sp3_reader.py
+
+      - name: Stage
+        shell: bash
+        run: |
+          mkdir -p bin/windows
+          cp dist/sp3_reader.exe bin/windows/sp3_reader.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-windows
+          path: bin/windows/sp3_reader.exe
+
+  # ── Linux / Ubuntu ──────────────────────────────────────────
+  build-ubuntu:
+    if: |
+      contains(github.event.head_commit.message, '[Build]') ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build
+        run: pyinstaller --onefile sp3_reader.py
+
+      - name: Stage
+        run: |
+          mkdir -p bin/linux/ubuntu
+          cp dist/sp3_reader bin/linux/ubuntu/sp3_reader
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-ubuntu
+          path: bin/linux/ubuntu/sp3_reader
+
+  # ── Linux / Debian ──────────────────────────────────────────
+  build-debian:
+    if: |
+      contains(github.event.head_commit.message, '[Build]') ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    container: debian:bookworm-slim
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python and build tools
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-pip python3-venv binutils
+
+      - name: Install PyInstaller
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install pyinstaller
+
+      - name: Build
+        run: .venv/bin/pyinstaller --onefile sp3_reader.py
+
+      - name: Stage
+        run: |
+          mkdir -p bin/linux/debian
+          cp dist/sp3_reader bin/linux/debian/sp3_reader
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-debian
+          path: bin/linux/debian/sp3_reader
+
+  # ── Commit binaries to repo ([Build] only) ──────────────────
+  commit-binaries:
+    needs: [build-windows, build-ubuntu, build-debian]
+    if: contains(github.event.head_commit.message, '[Build]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Arrange binaries
+        run: |
+          mkdir -p bin/windows bin/linux/ubuntu bin/linux/debian
+          cp artifacts/build-windows/sp3_reader.exe   bin/windows/sp3_reader.exe
+          cp artifacts/build-linux-ubuntu/sp3_reader   bin/linux/ubuntu/sp3_reader
+          cp artifacts/build-linux-debian/sp3_reader   bin/linux/debian/sp3_reader
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bin/
+          git diff --cached --quiet || git commit -m "chore: update binaries [skip ci]"
+          git push
+
+  # ── GitHub Release (tag only) ────────────────────────────────
+  release:
+    needs: [build-windows, build-ubuntu, build-debian]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes \
+            "artifacts/build-windows/sp3_reader.exe" \
+            "artifacts/build-linux-ubuntu/sp3_reader#sp3_reader-linux-ubuntu" \
+            "artifacts/build-linux-debian/sp3_reader#sp3_reader-linux-debian"
