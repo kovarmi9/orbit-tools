@@ -827,10 +827,9 @@ examples:
   sp3_reader file.sp3 -s L24          select satellite
   sp3_reader file.sp3 -f mjd          MJD time format
   sp3_reader file.sp3 -t TAI          convert time scale to TAI
-  sp3_reader file.sp3 -d ,            comma-separated output
-  sp3_reader file.sp3 -o out.txt      write to file
   sp3_reader file.sp3 -c              print column headers
-  sp3_reader file.sp3 -d ";"          semicolon-separated output""",
+  sp3_reader file.sp3 -d ";"          semicolon-separated output
+  sp3_reader file.sp3 -o out.txt      write to file""",
         formatter_class=_HelpFormatter,
     )
 

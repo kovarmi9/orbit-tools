@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-Hermite interpolation of SP3 orbit trajectories.
-
-Reads a data file (output of sp3_reader) and interpolates its trajectory
-onto the time grid taken from a reference file (also sp3_reader output).
-
-Input file format (sp3_reader output):
-  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps
-
-Output columns:
-  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps
-
-Hermite polynomial interpolation uses both position and velocity at each
-node, which guarantees C1 continuity and high accuracy.  The default
-degree-11 polynomial uses 6 surrounding nodes.
-
-Velocity columns in the output are always written as 0.0 because only
-position is interpolated (velocity interpolation is not implemented).
-"""
 from __future__ import annotations
 
 import argparse
@@ -319,10 +300,6 @@ def hermite_at_time(
 _MJD_EPOCH = datetime(1858, 11, 17)
 
 
-def _get_sep(delimiter: str) -> str | None:
-    """Return None for space delimiter (so str.split() handles multiple spaces), else the delimiter itself."""
-    return None if delimiter == " " else delimiter
-
 
 def _iso_to_seconds(s: str) -> float:
     """Parse ISO datetime string and return seconds since MJD epoch."""
@@ -344,7 +321,7 @@ def _detect_time_format(first_token: str) -> str:
         return "iso"
 
 
-def _iter_data_lines(source, delimiter: str):
+def _iter_data_lines(source, delimiter: str | None):
     """
     Yield non-empty, non-comment lines from a file path or a stream.
     Accepts Path objects, '-' (stdin), or any file-like object.
@@ -360,8 +337,8 @@ def _iter_data_lines(source, delimiter: str):
             yield ln
 
 
-def _parse_orbit_lines(lines, delimiter: str, source_name: str = "<input>"):
-    sep = _get_sep(delimiter)
+def _parse_orbit_lines(lines, delimiter: str | None, source_name: str = "<input>"):
+    sep = delimiter
     lines = list(lines)
     if not lines:
         raise ValueError(f"No data found in {source_name}.")
@@ -388,7 +365,7 @@ def _parse_orbit_lines(lines, delimiter: str, source_name: str = "<input>"):
     )
 
 
-def _read_orbit_file(source, delimiter: str):
+def _read_orbit_file(source, delimiter: str | None):
     """
     Read an sp3_reader output file or stdin ('-').
 
@@ -402,7 +379,7 @@ def _read_orbit_file(source, delimiter: str):
     return _parse_orbit_lines(_iter_data_lines(source, delimiter), delimiter, name)
 
 
-def _read_times_only(source, delimiter: str) -> tuple[np.ndarray, list[str]]:
+def _read_times_only(source, delimiter: str | None) -> tuple[np.ndarray, list[str]]:
     """
     Read only the time column from an sp3_reader output file or stdin ('-').
 
@@ -411,7 +388,7 @@ def _read_times_only(source, delimiter: str) -> tuple[np.ndarray, list[str]]:
     t      : ndarray (N,)  - seconds since MJD epoch
     labels : list[str]     - original time strings (preserved for output)
     """
-    sep     = _get_sep(delimiter)
+    sep     = delimiter
     lines   = list(_iter_data_lines(source, delimiter))
     name    = "<stdin>" if source == "-" else str(source)
     if not lines:
@@ -440,17 +417,36 @@ def _format_float(value: float) -> str:
 def _print_results(
     r_interp: np.ndarray,
     time_labels: list[str],
-    delimiter: str,
+    delimiter: str | None,
     output_file,
+    column_headers: bool = False,
 ) -> None:
+    columns = ["time", "x_m", "y_m", "z_m"]
+    aligned = delimiter is None
+
+    rows = []
     skipped = 0
     for i, t_str in enumerate(time_labels):
         if np.any(np.isnan(r_interp[i])):
             skipped += 1
             continue
         x, y, z = r_interp[i]
-        row = delimiter.join([t_str, _format_float(x), _format_float(y), _format_float(z), "0.0", "0.0", "0.0"])
-        print(row, file=output_file)
+        rows.append([t_str, _format_float(x), _format_float(y), _format_float(z)])
+
+    if aligned:
+        col_widths = [len(c) for c in columns]
+        for row in rows:
+            for i, val in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(val))
+        if column_headers:
+            print(" ".join(c.rjust(col_widths[i]) for i, c in enumerate(columns)), file=output_file)
+        for row in rows:
+            print(" ".join(val.rjust(col_widths[i]) for i, val in enumerate(row)), file=output_file)
+    else:
+        if column_headers:
+            print(delimiter.join(columns), file=output_file)
+        for row in rows:
+            print(delimiter.join(row), file=output_file)
 
     if skipped:
         print(
@@ -468,8 +464,8 @@ class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
     Custom help formatter that shows metavar only once (after the long option)
     and aligns help text further right so all options fit on one line.
 
-    Without this class:  -d SEP, --delimiter SEP
-    With this class:     -d, --delimiter SEP   Column separator.
+    Without this class:  -g N, --degree N
+    With this class:     -g, --degree N   Hermite polynomial degree.
     """
 
     def __init__(self, prog):
@@ -502,14 +498,14 @@ DATA_FILE      sp3_reader output whose trajectory is interpolated
 REFERENCE_FILE sp3_reader output whose time column defines the query epochs""",
         epilog="""\
 output columns:
-  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps
-  (velocity columns are always 0.0 - only position is interpolated)
+  time  x_m  y_m  z_m
 
 examples:
   hermite_interpolation data.txt reference.txt
-  hermite_interpolation data.txt reference.txt -o result.txt
-  hermite_interpolation data.txt reference.txt -d ,
-  hermite_interpolation data.txt reference.txt --degree 7""",
+  hermite_interpolation data.txt reference.txt -g 7
+  hermite_interpolation data.txt reference.txt -c              print column headers
+  hermite_interpolation data.txt reference.txt -d ";"          semicolon-separated output
+  hermite_interpolation data.txt reference.txt -o result.txt   write to file""",
         formatter_class=_HelpFormatter,
     )
 
@@ -526,6 +522,7 @@ examples:
     )
 
     parser.add_argument(
+        "-g",
         "--degree",
         type=int,
         default=11,
@@ -534,11 +531,18 @@ examples:
     )
 
     parser.add_argument(
+        "-c",
+        "--column-headers",
+        action="store_true",
+        help="Print column names as first line of output.",
+    )
+
+    parser.add_argument(
         "-d",
         "--delimiter",
-        default=" ",
+        default=None,
         metavar="SEP",
-        help="Column separator for inputs and output (default: space).",
+        help="Column separator for inputs and output (default: aligned columns).",
     )
 
     parser.add_argument(
@@ -616,6 +620,7 @@ def main() -> int:
             time_labels,
             delimiter=args.delimiter,
             output_file=out_file,
+            column_headers=args.column_headers,
         )
     finally:
         if close_out:

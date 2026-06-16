@@ -1,154 +1,179 @@
 #!/usr/bin/env python3
-"""
-Plot X, Y, Z position differences between two sp3_reader output files.
-
-Usage:
-    python plot_orbit_diff.py SSA_FILE GOP_TAI_FILE
-    python plot_orbit_diff.py test_ssa.txt test_gop_tai.txt -o diff.pdf
-"""
 from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
+import numpy as np
 
 
 # ============================================================
-# I/O
+# File I/O
 # ============================================================
 
-_MJD_EPOCH = datetime(1858, 11, 17)
-
-
-def _parse_time(s: str) -> datetime:
+def _parse_time(s: str) -> float:
     try:
-        return datetime.fromisoformat(s)
+        return float(s) * 86400.0
     except ValueError:
-        return _MJD_EPOCH + timedelta(days=float(s))
+        return datetime.fromisoformat(s).timestamp()
 
 
-def _read_file(path: Path) -> tuple[list[datetime], np.ndarray]:
-    times, rows = [], []
-    for ln in path.read_text(encoding="utf-8").splitlines():
-        if not ln.strip() or ln.startswith("#"):
-            continue
-        cols = ln.split()
+def _read_diff_file(path: Path, delimiter: str | None):
+    """
+    Read orbit_diff output file.
+
+    Returns
+    -------
+    t_hours : ndarray (N,)   - time in hours from first epoch
+    data    : ndarray (N, 3) - first three difference columns [m]
+    labels  : list[str]      - subplot labels (detected from header or generic)
+    """
+    sep   = delimiter
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines()
+             if ln.strip() and not ln.startswith("#")]
+
+    if not lines:
+        raise ValueError(f"No data in {path}.")
+
+    # detect header line
+    col_names = None
+    first_tok = lines[0].split(sep)[0]
+    is_header = False
+    try:
+        float(first_tok)
+    except ValueError:
+        try:
+            datetime.fromisoformat(first_tok)
+        except ValueError:
+            is_header = True
+
+    if is_header:
+        col_names = lines[0].split(sep)
+        lines = lines[1:]
+
+    if not lines:
+        raise ValueError(f"No data in {path} after skipping header.")
+
+    t_list, d_list = [], []
+    for ln in lines:
+        cols = ln.split(sep)
         if len(cols) < 4:
             continue
         try:
-            times.append(_parse_time(cols[0]))
-            rows.append([float(cols[1]), float(cols[2]), float(cols[3])])
+            t_list.append(_parse_time(cols[0]))
+            d_list.append([float(cols[1]), float(cols[2]), float(cols[3])])
         except ValueError:
             continue
-    return times, np.array(rows, dtype=float)
+
+    if not t_list:
+        raise ValueError(f"No valid records parsed from {path}.")
+
+    t       = np.array(t_list, dtype=float)
+    t_hours = (t - t[0]) / 3600.0
+    data    = np.array(d_list, dtype=float)
+
+    # detect RTN vs XYZ from header column names
+    if col_names is not None:
+        names_lower = [c.lower() for c in col_names]
+        if any("dr" in n for n in names_lower):
+            labels = ["Radiální složka (R)", "Transverzální složka (T)", "Normálová složka (N)"]
+        elif any("dx" in n for n in names_lower):
+            labels = ["Složka X", "Složka Y", "Složka Z"]
+        else:
+            labels = ["Složka 1", "Složka 2", "Složka 3"]
+    else:
+        labels = ["Složka 1", "Složka 2", "Složka 3"]
+
+    return t_hours, data, labels
 
 
 # ============================================================
 # Plot
 # ============================================================
 
-def _plot(
-    times: list[datetime],
-    diff: np.ndarray,
-    label_a: str,
-    label_b: str,
-    out_path: Path,
-) -> None:
-    components = ["X", "Y", "Z"]
-    units      = "m"
+def _plot(t_hours: np.ndarray, data: np.ndarray, labels: list[str], output: Path | None) -> None:
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    fig.suptitle("Rozdíly orbit", fontsize=14, fontweight="bold")
 
-    fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
-    fig.suptitle(
-        f"Orbit difference  {label_a} - {label_b}",
-        fontsize=15,
-        fontweight="bold",
-    )
+    data_mm = data * 1000.0  # m → mm
 
-    for i, (ax, comp) in enumerate(zip(axes, components)):
-        ax.plot(times, diff[:, i], linewidth=0.8, color=f"C{i}")
-        ax.axhline(0, color="black", linewidth=1.0, zorder=0)
-        ax.set_ylabel(f"$\\Delta {comp}$  [{units}]")
-        ax.grid(alpha=0.3)
+    for ax, col, label in zip(axes, data_mm.T, labels):
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.plot(t_hours, col, color="#1f77b4", linewidth=0.8)
+        ax.set_title(label, fontsize=10)
+        ax.set_ylabel("Rozdíl [mm]", fontsize=9)
+        ax.grid(True, linewidth=0.4, alpha=0.7)
 
-        rms  = np.sqrt(np.mean(diff[:, i] ** 2))
-        mean = np.mean(diff[:, i])
-        ax.set_title(
-            f"{comp}   mean = {mean:+.4f} m    RMS = {rms:.4f} m",
-            fontsize=10,
-        )
-
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%d. %m. %Y %H:%M"))
-    fig.autofmt_xdate(rotation=45)
+    axes[-1].set_xlabel("Čas od začátku série [h]", fontsize=9)
 
     plt.tight_layout()
-    fig.savefig(out_path, bbox_inches="tight")
-    print(f"Saved: {out_path}", file=sys.stderr)
+
+    if output is not None:
+        plt.savefig(output, dpi=150, bbox_inches="tight")
+        print(f"Saved: {output}", file=sys.stderr)
+    else:
+        plt.show()
 
 
 # ============================================================
 # CLI
 # ============================================================
 
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
         prog="plot_orbit_diff",
-        description="Plot X/Y/Z differences between two sp3_reader output files.",
+        description="Plot orbit_diff output as a 3-panel difference chart (RTN or XYZ).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("ssa_file",    type=Path, metavar="SSA_FILE")
-    p.add_argument("gop_tai_file", type=Path, metavar="GOP_TAI_FILE")
-    p.add_argument(
-        "-o", "--output", type=Path, metavar="FILE",
-        default=Path("orbit_diff.pdf"),
-        help="Output PDF (default: orbit_diff.pdf).",
+
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default=None,
+        metavar="FILE",
+        help="orbit_diff output file (default: diff.txt next to this script).",
     )
-    return p
+
+    parser.add_argument(
+        "-d",
+        "--delimiter",
+        default=None,
+        metavar="SEP",
+        help="Column separator used in input file (default: whitespace).",
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Save plot to FILE instead of showing interactively (e.g. diff.png).",
+    )
+
+    return parser
 
 
 def main() -> int:
-    args = _build_parser().parse_args()
+    parser = _build_arg_parser()
+    args   = parser.parse_args()
+
+    path = Path(args.input) if args.input is not None else Path(__file__).parent / "diff.txt"
+
+    if not path.exists():
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        return 1
 
     try:
-        times_a, xyz_a = _read_file(args.ssa_file)
-        times_b, xyz_b = _read_file(args.gop_tai_file)
-    except (OSError, ValueError) as exc:
+        t_hours, data, labels = _read_diff_file(path, args.delimiter)
+    except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    # match on common times
-    set_b = {t: i for i, t in enumerate(times_b)}
-    common_times, idx_a, idx_b = [], [], []
-    for i, t in enumerate(times_a):
-        if t in set_b:
-            common_times.append(t)
-            idx_a.append(i)
-            idx_b.append(set_b[t])
-
-    if not common_times:
-        print("Error: no common epochs found between the two files.", file=sys.stderr)
-        return 1
-
-    diff = xyz_a[idx_a] - xyz_b[idx_b]
-
-    print(
-        f"Common epochs: {len(common_times)}  "
-        f"({common_times[0].isoformat()} .. {common_times[-1].isoformat()})",
-        file=sys.stderr,
-    )
-
-    _plot(
-        common_times,
-        diff,
-        label_a=args.ssa_file.stem,
-        label_b=args.gop_tai_file.stem,
-        out_path=args.output,
-    )
+    _plot(t_hours, data, labels, args.output)
     return 0
 
 

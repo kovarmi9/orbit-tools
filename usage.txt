@@ -1,0 +1,7 @@
+python sp3_reader.py test_gop.sp3 -t GPS > test_gop_gps.txt
+
+python sp3_reader.py test_ssa.sp3 -t GPS > test_ssa_gps.txt
+
+python hermite_interpolation.py test_ssa_gps.txt test_gop_gps.txt > test_ssa_int.txt
+
+python orbit_diff.py test_gop_gps.txt test_ssa_int.txt -r -o diff.txt
