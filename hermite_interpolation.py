@@ -68,15 +68,7 @@ def _coerce_inputs(data):
             return t, r, v
 
         if len(data) == 7:
-            t, x, y, z, vx, vy, vz = data
-            t = np.asarray(t, dtype=float).reshape(-1)
-            x = np.asarray(x, dtype=float).reshape(-1)
-            y = np.asarray(y, dtype=float).reshape(-1)
-            z = np.asarray(z, dtype=float).reshape(-1)
-            vx = np.asarray(vx, dtype=float).reshape(-1)
-            vy = np.asarray(vy, dtype=float).reshape(-1)
-            vz = np.asarray(vz, dtype=float).reshape(-1)
-
+            t, x, y, z, vx, vy, vz = [np.asarray(a, dtype=float).reshape(-1) for a in data]
             r = np.column_stack([x, y, z])
             v = np.column_stack([vx, vy, vz])
             return t, r, v
@@ -157,12 +149,7 @@ def _select_nodes(t_sorted: np.ndarray, t_query: float, n_nodes: int) -> np.ndar
             "Query too close to edge for selected degree; not enough nodes on both sides."
         )
 
-    return np.concatenate(
-        [
-            np.arange(i_gap - left_count, i_gap),
-            np.arange(i_gap, i_gap + right_count),
-        ]
-    )
+    return np.arange(i_gap - left_count, i_gap + right_count)
 
 
 def lagrange_basis(x_nodes: np.ndarray, x: float) -> np.ndarray:
@@ -332,6 +319,11 @@ def hermite_at_time(
 _MJD_EPOCH = datetime(1858, 11, 17)
 
 
+def _get_sep(delimiter: str) -> str | None:
+    """Return None for space delimiter (so str.split() handles multiple spaces), else the delimiter itself."""
+    return None if delimiter == " " else delimiter
+
+
 def _iso_to_seconds(s: str) -> float:
     """Parse ISO datetime string and return seconds since MJD epoch."""
     dt = datetime.fromisoformat(s)
@@ -341,8 +333,6 @@ def _iso_to_seconds(s: str) -> float:
 def _mjd_to_seconds(s: str) -> float:
     """Parse MJD float string and return seconds since MJD epoch."""
     return float(s) * 86400.0
-
-
 
 
 def _detect_time_format(first_token: str) -> str:
@@ -371,7 +361,7 @@ def _iter_data_lines(source, delimiter: str):
 
 
 def _parse_orbit_lines(lines, delimiter: str, source_name: str = "<input>"):
-    sep = None if delimiter == " " else delimiter
+    sep = _get_sep(delimiter)
     lines = list(lines)
     if not lines:
         raise ValueError(f"No data found in {source_name}.")
@@ -421,7 +411,7 @@ def _read_times_only(source, delimiter: str) -> tuple[np.ndarray, list[str]]:
     t      : ndarray (N,)  - seconds since MJD epoch
     labels : list[str]     - original time strings (preserved for output)
     """
-    sep     = None if delimiter == " " else delimiter
+    sep     = _get_sep(delimiter)
     lines   = list(_iter_data_lines(source, delimiter))
     name    = "<stdin>" if source == "-" else str(source)
     if not lines:
@@ -439,7 +429,6 @@ def _read_times_only(source, delimiter: str) -> tuple[np.ndarray, list[str]]:
     return np.array(t_list, dtype=float), labels
 
 
-
 # ============================================================
 # Output
 # ============================================================
@@ -454,23 +443,13 @@ def _print_results(
     delimiter: str,
     output_file,
 ) -> None:
-    sep = delimiter
     skipped = 0
-    for i in range(len(time_labels)):
+    for i, t_str in enumerate(time_labels):
         if np.any(np.isnan(r_interp[i])):
             skipped += 1
             continue
-
-        t_str = time_labels[i]
-
         x, y, z = r_interp[i]
-        row = sep.join([
-            t_str,
-            _format_float(x),
-            _format_float(y),
-            _format_float(z),
-            "0.0", "0.0", "0.0",
-        ])
+        row = delimiter.join([t_str, _format_float(x), _format_float(y), _format_float(z), "0.0", "0.0", "0.0"])
         print(row, file=output_file)
 
     if skipped:
@@ -485,41 +464,52 @@ def _print_results(
 # ============================================================
 
 class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
-    """Metavar shown once after the long flag; help text aligned at column 38."""
+    """
+    Custom help formatter that shows metavar only once (after the long option)
+    and aligns help text further right so all options fit on one line.
 
-    def __init__(self, prog: str) -> None:
+    Without this class:  -d SEP, --delimiter SEP
+    With this class:     -d, --delimiter SEP   Column separator.
+    """
+
+    def __init__(self, prog):
+        # Push help text further right (position 38) and widen the output (100 chars)
         super().__init__(prog, max_help_position=38, width=100)
 
-    def _format_action_invocation(self, action: argparse.Action) -> str:
+    def _format_action_invocation(self, action):
+        # For positional args and flags without a value (e.g. --metadata), use default formatting
         if not action.option_strings or action.nargs == 0:
             return super()._format_action_invocation(action)
-        default = self._get_default_metavar_for_optional(action)
-        metavar = self._metavar_formatter(action, default)(1)[0]
-        return f"{', '.join(action.option_strings)} {metavar}" if metavar else \
-               ", ".join(action.option_strings)
+
+        metavar = action.metavar or ""
+        shorts = [o for o in action.option_strings if not o.startswith("--")]
+        longs  = [o for o in action.option_strings if o.startswith("--")]
+
+        # Show metavar only next to the long option: -d, --delimiter SEP
+        if metavar:
+            return ", ".join(shorts + [f"{o} {metavar}" for o in longs])
+        return ", ".join(action.option_strings)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hermite_interpolation",
         usage="hermite_interpolation [options] DATA_FILE REFERENCE_FILE",
-        description=(
-            "Hermite-interpolate an SP3 trajectory onto a reference time grid.\n"
-            "\n"
-            "DATA_FILE      sp3_reader output whose trajectory is interpolated\n"
-            "REFERENCE_FILE sp3_reader output whose time column defines the query epochs"
-        ),
-        epilog=(
-            "output columns:\n"
-            "  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps\n"
-            "  (velocity columns are always 0.0 - only position is interpolated)\n"
-            "\n"
-            "examples:\n"
-            "  hermite_interpolation data.txt reference.txt\n"
-            "  hermite_interpolation data.txt reference.txt -o result.txt\n"
-            "  hermite_interpolation data.txt reference.txt -d ,\n"
-            "  hermite_interpolation data.txt reference.txt --degree 7"
-        ),
+        description="""\
+Hermite-interpolate an SP3 trajectory onto a reference time grid.
+
+DATA_FILE      sp3_reader output whose trajectory is interpolated
+REFERENCE_FILE sp3_reader output whose time column defines the query epochs""",
+        epilog="""\
+output columns:
+  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps
+  (velocity columns are always 0.0 - only position is interpolated)
+
+examples:
+  hermite_interpolation data.txt reference.txt
+  hermite_interpolation data.txt reference.txt -o result.txt
+  hermite_interpolation data.txt reference.txt -d ,
+  hermite_interpolation data.txt reference.txt --degree 7""",
         formatter_class=_HelpFormatter,
     )
 

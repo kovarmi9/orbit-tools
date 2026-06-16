@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
 import argparse
@@ -54,16 +55,10 @@ _LEAPS: tuple[tuple[datetime, int], ...] = (
 # ============================================================
 
 def _safe_float(value: str) -> float | None:
-    """
-    Convert SP3 numeric field to float.
-
-    Empty or invalid values are returned as None.
-    """
+    """Convert SP3 numeric field to float. Returns None for empty or invalid values."""
     value = value.strip()
-
     if not value:
         return None
-
     try:
         return float(value)
     except ValueError:
@@ -71,13 +66,8 @@ def _safe_float(value: str) -> float | None:
 
 
 def _format_float(value: float | None) -> str:
-    """
-    Format numeric value for text output.
-    """
-    if value is None:
-        return ""
-
-    return f"{value:.12g}"
+    """Format a number for text output. Returns empty string if value is missing."""
+    return "" if value is None else f"{value:.12g}"
 
 
 # ============================================================
@@ -85,15 +75,10 @@ def _format_float(value: float | None) -> str:
 # ============================================================
 
 def _split_header_and_body(lines: list[str]) -> tuple[list[str], list[str]]:
-    """
-    Split SP3 file into header lines and body lines.
-
-    Header is assumed to end before the first epoch line starting with '*'.
-    """
+    """Split SP3 file into header and body. Body starts at the first epoch line ('*')."""
     for i, line in enumerate(lines):
         if line.lstrip().startswith("*"):
             return lines[:i], lines[i:]
-
     return lines, []
 
 
@@ -105,9 +90,7 @@ _TIME_SCALE_RE = re.compile(r"\b(GPS|UTC|TAI)\b", re.IGNORECASE)
 
 
 def _extract_coordinate_system_from_header(header_lines: list[str]) -> str:
-    """
-    Extract coordinate/reference system from SP3 header.
-    """
+    """Extract coordinate/reference system from SP3 header. Returns UNKNOWN if not found."""
     candidates = ("ITRF", "IGS", "GCRF", "ICRF", "WGS84", "WGS 84")
 
     for line in header_lines:
@@ -120,22 +103,10 @@ def _extract_coordinate_system_from_header(header_lines: list[str]) -> str:
 
 
 def _extract_time_scale_from_header(header_lines: list[str]) -> str:
-    """
-    Extract time scale from SP3 header.
-
-    Strategy
-    --------
-    1. Look first at lines starting with '%c'
-    2. Fallback to the rest of the header
-    3. Return UNKNOWN if not found
-    """
-    for line in header_lines:
-        if line.lstrip().startswith("%c"):
-            match = _TIME_SCALE_RE.search(line)
-            if match:
-                return match.group(1).upper()
-
-    for line in header_lines:
+    """Extract time scale (GPS/UTC/TAI) from SP3 header. Prefers %c lines, falls back to full header."""
+    # Prioritise %c lines (official time scale field), then fall back to any match
+    priority = [l for l in header_lines if l.lstrip().startswith("%c")]
+    for line in priority + header_lines:
         match = _TIME_SCALE_RE.search(line)
         if match:
             return match.group(1).upper()
@@ -215,16 +186,10 @@ def _parse_header_satellites(header_lines: list[str]) -> list[str]:
     +   3   L20  L21  L22  0  0  0  0  0  0  0  0  0  0  0  0  0
     """
     satellites = []
-    first = True
-    for line in header_lines:
-        stripped = line.lstrip()
-        if stripped.startswith("+") and not stripped.startswith("++"):
-            parts = stripped.split()
-            start = 2 if first else 1
-            first = False
-            for sat in parts[start:]:
-                if sat not in ("0", "000"):
-                    satellites.append(sat)
+    plus_lines = [l for l in header_lines if l.lstrip().startswith("+") and not l.lstrip().startswith("++")]
+    for i, line in enumerate(plus_lines):
+        parts = line.lstrip().split()
+        satellites += [sat for sat in parts[2 if i == 0 else 1:] if sat not in ("0", "000")]
     return satellites
 
 
@@ -232,14 +197,11 @@ def _parse_header_comments(header_lines: list[str]) -> list[str]:
     """
     Parse comment lines (/*) from SP3 header.
     """
-    comments = []
-    for line in header_lines:
-        stripped = line.lstrip()
-        if stripped.startswith("/*"):
-            comment = stripped[2:].strip()
-            if comment:
-                comments.append(comment)
-    return comments
+    return [
+        line.lstrip()[2:].strip()
+        for line in header_lines
+        if line.lstrip().startswith("/*") and line.lstrip()[2:].strip()
+    ]
 
 
 def _parse_sp3_header(header_lines: list[str]) -> dict:
@@ -359,10 +321,8 @@ def _convert_datetime_between_scales(
         tai_dt = dt
     elif source == "GPS":
         tai_dt = dt + timedelta(seconds=_GPS_TAI)
-    elif source == "UTC":
+    else:  # UTC
         tai_dt = dt + timedelta(seconds=_tai_minus_utc_seconds_approx(dt))
-    else:
-        raise ValueError(f"Unsupported source time scale: {source_scale!r}")
 
     # Convert TAI-like time to target scale.
     if target == "TAI":
@@ -371,12 +331,10 @@ def _convert_datetime_between_scales(
     if target == "GPS":
         return tai_dt - timedelta(seconds=_GPS_TAI)
 
-    if target == "UTC":
-        utc_guess = tai_dt - timedelta(seconds=_tai_minus_utc_seconds_approx(tai_dt))
-        utc_offset = _tai_minus_utc_seconds_approx(utc_guess)
-        return tai_dt - timedelta(seconds=utc_offset)
-
-    raise ValueError(f"Unsupported target time scale: {target_scale!r}")
+    # UTC
+    utc_guess = tai_dt - timedelta(seconds=_tai_minus_utc_seconds_approx(tai_dt))
+    utc_offset = _tai_minus_utc_seconds_approx(utc_guess)
+    return tai_dt - timedelta(seconds=utc_offset)
 
 
 def _format_time(
@@ -443,74 +401,49 @@ def _parse_epoch_line(line: str) -> datetime:
     return datetime(year, month, day, hour, minute, second, microsecond)
 
 
-def _parse_sp3_position_line(line: str) -> tuple[str, float | None, float | None, float | None]:
+def _parse_sp3_record_line(line: str) -> tuple[str, float | None, float | None, float | None]:
     """
-    Parse fixed-width SP3 position record.
+    Parse fixed-width SP3 position or velocity record.
 
-    Input unit is km.
-    """
-    satellite = line[1:4].strip()
-    x = _safe_float(line[4:18])
-    y = _safe_float(line[18:32])
-    z = _safe_float(line[32:46])
-
-    return satellite, x, y, z
-
-
-def _parse_sp3_velocity_line(line: str) -> tuple[str, float | None, float | None, float | None]:
-    """
-    Parse fixed-width SP3 velocity record.
-
-    Input unit is dm/s.
+    Position input unit is km, velocity input unit is dm/s.
     """
     satellite = line[1:4].strip()
-    vx = _safe_float(line[4:18])
-    vy = _safe_float(line[18:32])
-    vz = _safe_float(line[32:46])
+    a = _safe_float(line[4:18])
+    b = _safe_float(line[18:32])
+    c = _safe_float(line[32:46])
 
-    return satellite, vx, vy, vz
+    return satellite, a, b, c
 
 
-def _new_record(epoch: datetime, satellite: str) -> dict:
-    """
-    Create empty orbit record.
-    """
-    return {
-        "epoch": epoch,
-        "satellite": satellite,
-        "x": None,
-        "y": None,
-        "z": None,
-        "vx": None,
-        "vy": None,
-        "vz": None,
-        "has_position": False,
-        "has_velocity": False,
-    }
+@dataclass
+class OrbitRecord:
+    epoch:        datetime
+    satellite:    str
+    x:            float | None = None
+    y:            float | None = None
+    z:            float | None = None
+    vx:           float | None = None
+    vy:           float | None = None
+    vz:           float | None = None
+    has_position: bool = False
+    has_velocity: bool = False
 
 
 # ============================================================
 # Unit normalization
 # ============================================================
 
-def _km_to_m(value: float | None) -> float | None:
-    """
-    Convert kilometres to metres.
-    """
-    if value is None:
-        return None
-
-    return value * 1000.0
+def _scale_value(value: float | None, factor: float) -> float | None:
+    """Multiply value by factor, or return None if value is None."""
+    return None if value is None else value * factor
 
 
-def _dmps_to_mps(value: float | None) -> float | None:
-    """
-    Convert decimetres per second to metres per second.
-    """
-    if value is None:
-        return None
-
-    return value * 0.1
+def _get_or_create_record(records: dict, epoch: datetime, satellite: str) -> OrbitRecord:
+    """Return existing orbit record for (epoch, satellite), or create a new one."""
+    key = (epoch, satellite)
+    if key not in records:
+        records[key] = OrbitRecord(epoch=epoch, satellite=satellite)
+    return records[key]
 
 
 # ============================================================
@@ -529,7 +462,7 @@ def _detect_expected_step(steps: list[float]) -> float | None:
     for s in steps:
         if s > 0:
             counts[s] = counts.get(s, 0) + 1
-    return max(counts, key=counts.__getitem__) if counts else None
+    return max(counts, key=lambda s: counts[s]) if counts else None
 
 
 def _classify_step(step_seconds: float, expected: float) -> str | None:
@@ -550,7 +483,7 @@ def _classify_step(step_seconds: float, expected: float) -> str | None:
     return "irregular"
 
 
-def _read_sp3_file(path: Path) -> tuple[dict, dict[tuple[datetime, str], dict], dict]:
+def _read_sp3_file(path: Path) -> tuple[dict, dict[tuple[datetime, str], OrbitRecord], dict]:
     """
     Read SP3 file and return header, records and validation statistics.
 
@@ -564,7 +497,7 @@ def _read_sp3_file(path: Path) -> tuple[dict, dict[tuple[datetime, str], dict], 
     header = _parse_sp3_header(header_lines)
 
     current_epoch: datetime | None = None
-    records: dict[tuple[datetime, str], dict] = {}
+    records: dict[tuple[datetime, str], OrbitRecord] = {}
 
     epoch_counts: dict[datetime, int] = {}
     epoch_sequence: list[datetime] = []
@@ -591,33 +524,25 @@ def _read_sp3_file(path: Path) -> tuple[dict, dict[tuple[datetime, str], dict], 
             continue
 
         if record_type == "P":
-            satellite, x_km, y_km, z_km = _parse_sp3_position_line(stripped)
-            key = (current_epoch, satellite)
-
-            if key not in records:
-                records[key] = _new_record(current_epoch, satellite)
-            elif records[key]["has_position"]:
+            satellite, a, b, c = _parse_sp3_record_line(stripped)
+            rec = _get_or_create_record(records, current_epoch, satellite)
+            if rec.has_position:
                 duplicate_position_count += 1
-
-            records[key]["x"] = _km_to_m(x_km)
-            records[key]["y"] = _km_to_m(y_km)
-            records[key]["z"] = _km_to_m(z_km)
-            records[key]["has_position"] = True
+            rec.x = _scale_value(a, 1000.0)
+            rec.y = _scale_value(b, 1000.0)
+            rec.z = _scale_value(c, 1000.0)
+            rec.has_position = True
             continue
 
         if record_type == "V":
-            satellite, vx_dmps, vy_dmps, vz_dmps = _parse_sp3_velocity_line(stripped)
-            key = (current_epoch, satellite)
-
-            if key not in records:
-                records[key] = _new_record(current_epoch, satellite)
-            elif records[key]["has_velocity"]:
+            satellite, a, b, c = _parse_sp3_record_line(stripped)
+            rec = _get_or_create_record(records, current_epoch, satellite)
+            if rec.has_velocity:
                 duplicate_velocity_count += 1
-
-            records[key]["vx"] = _dmps_to_mps(vx_dmps)
-            records[key]["vy"] = _dmps_to_mps(vy_dmps)
-            records[key]["vz"] = _dmps_to_mps(vz_dmps)
-            records[key]["has_velocity"] = True
+            rec.vx = _scale_value(a, 0.1)
+            rec.vy = _scale_value(b, 0.1)
+            rec.vz = _scale_value(c, 0.1)
+            rec.has_velocity = True
             continue
 
     all_steps = [
@@ -645,8 +570,8 @@ def _read_sp3_file(path: Path) -> tuple[dict, dict[tuple[datetime, str], dict], 
         "duplicate_position_count": duplicate_position_count,
         "duplicate_velocity_count": duplicate_velocity_count,
         "record_count": len(records),
-        "missing_position_count": sum(1 for record in records.values() if not record["has_position"]),
-        "missing_velocity_count": sum(1 for record in records.values() if not record["has_velocity"]),
+        "missing_position_count": sum(1 for record in records.values() if not record.has_position),
+        "missing_velocity_count": sum(1 for record in records.values() if not record.has_velocity),
         "non_monotonic_epoch_count": non_monotonic_epoch_count,
         "time_gap_count":            time_gap_count,
         "irregular_step_count":      irregular_step_count,
@@ -666,63 +591,30 @@ def _print_validation_warnings(stats: dict) -> None:
 
     stdout stays clean for data output and command-line pipelines.
     """
-    if stats["duplicate_epoch_count"] > 0:
-        print(
-            f"Warning: {stats['duplicate_epoch_count']} duplicate epoch(s) detected.",
-            file=sys.stderr,
-        )
+    warnings = [
+        ("duplicate_epoch_count",     "duplicate epoch(s) detected"),
+        ("duplicate_position_count",  "duplicate position record(s) detected"),
+        ("duplicate_velocity_count",  "duplicate velocity record(s) detected"),
+        ("missing_position_count",    "record(s) missing position data"),
+        ("missing_velocity_count",    "record(s) missing velocity data"),
+        ("non_monotonic_epoch_count", "non-monotonic epoch step(s) detected"),
+        ("time_gap_count",            "time gap(s) detected in epoch sequence"),
+        ("irregular_step_count",      "irregular epoch step(s) detected"),
+    ]
 
-    if stats["duplicate_position_count"] > 0:
-        print(
-            f"Warning: {stats['duplicate_position_count']} duplicate position record(s) detected.",
-            file=sys.stderr,
-        )
-
-    if stats["duplicate_velocity_count"] > 0:
-        print(
-            f"Warning: {stats['duplicate_velocity_count']} duplicate velocity record(s) detected.",
-            file=sys.stderr,
-        )
-
-    if stats["missing_position_count"] > 0:
-        print(
-            f"Warning: {stats['missing_position_count']} record(s) missing position data.",
-            file=sys.stderr,
-        )
-
-    if stats["missing_velocity_count"] > 0:
-        print(
-            f"Warning: {stats['missing_velocity_count']} record(s) missing velocity data.",
-            file=sys.stderr,
-        )
-
-    if stats["non_monotonic_epoch_count"] > 0:
-        print(
-            f"Warning: {stats['non_monotonic_epoch_count']} non-monotonic epoch step(s) detected.",
-            file=sys.stderr,
-        )
-
-    if stats["time_gap_count"] > 0:
-        print(
-            f"Warning: {stats['time_gap_count']} time gap(s) detected in epoch sequence.",
-            file=sys.stderr,
-        )
-
-    if stats["irregular_step_count"] > 0:
-        print(
-            f"Warning: {stats['irregular_step_count']} irregular epoch step(s) detected.",
-            file=sys.stderr,
-        )
+    for key, message in warnings:
+        if stats[key] > 0:
+            print(f"Warning: {stats[key]} {message}.", file=sys.stderr)
 
 
 def _check_single_satellite(
-    records: dict[tuple[datetime, str], dict],
+    records: dict[tuple[datetime, str], OrbitRecord],
 ) -> bool:
     """
     Error if more than one satellite is present in records.
     Returns True if check passes, False if it fails.
     """
-    satellites = sorted({record["satellite"] for record in records.values()})
+    satellites = sorted({record.satellite for record in records.values()})
 
     if len(satellites) > 1:
         print(
@@ -754,9 +646,9 @@ def _parse_satellite_filter(value: str | None) -> set[str] | None:
 
 
 def _filter_records(
-    records: dict[tuple[datetime, str], dict],
+    records: dict[tuple[datetime, str], OrbitRecord],
     satellites: set[str] | None,
-) -> dict[tuple[datetime, str], dict]:
+) -> dict[tuple[datetime, str], OrbitRecord]:
     """
     Filter records by satellite identifiers.
     """
@@ -766,19 +658,13 @@ def _filter_records(
     return {
         key: record
         for key, record in records.items()
-        if record["satellite"] in satellites
+        if record.satellite in satellites
     }
 
 
 # ============================================================
 # Output helpers
 # ============================================================
-
-def _write_line(output_file, line: str) -> None:
-    """
-    Write one line to selected output stream.
-    """
-    print(line, file=output_file)
 
 
 def _print_header_metadata(header: dict, *, output_file) -> None:
@@ -802,33 +688,39 @@ def _print_header_metadata(header: dict, *, output_file) -> None:
     def row(key: str, value) -> str:
         return f"  {(key + ':'):<{W}} {value}"
 
-    _write_line(output_file, row("version",           header["version"]))
-    _write_line(output_file, row("file type",         pos_vel_label))
-    _write_line(output_file, row("agency",            header["agency"]))
-    _write_line(output_file, row("orbit type",        header["orbit_type"]))
-    _write_line(output_file, row("time scale",        header["time_scale"]))
-    _write_line(output_file, row("coordinate system", header["coordinate_system"]))
-    _write_line(output_file, row("start epoch",       header["start_epoch"]))
-    _write_line(output_file, row("start MJD",         header["start_mjd"]))
-    _write_line(output_file, row("epoch count",       header["epoch_count"]))
-    _write_line(output_file, row("epoch interval",    f"{header['epoch_interval_seconds']} s"))
-    _write_line(output_file, row(sat_key,             " ".join(satellites)))
+    meta_rows = [
+        ("version",           header["version"]),
+        ("file type",         pos_vel_label),
+        ("agency",            header["agency"]),
+        ("orbit type",        header["orbit_type"]),
+        ("time scale",        header["time_scale"]),
+        ("coordinate system", header["coordinate_system"]),
+        ("start epoch",       header["start_epoch"]),
+        ("start MJD",         header["start_mjd"]),
+        ("epoch count",       header["epoch_count"]),
+        ("epoch interval",    f"{header['epoch_interval_seconds']} s"),
+        (sat_key,             " ".join(satellites)),
+    ]
+
+    for label, value in meta_rows:
+        print(row(label, value), file=output_file)
 
     if comments:
         indent = " " * (W + 3)
-        _write_line(output_file, row("comments", comments[0]))
+        print(row("comments", comments[0]), file=output_file)
         for comment in comments[1:]:
-            _write_line(output_file, f"{indent}{comment}")
+            print(f"{indent}{comment}", file=output_file)
 
 
 def _print_records(
-    records: dict[tuple[datetime, str], dict],
+    records: dict[tuple[datetime, str], OrbitRecord],
     *,
     source_time_scale: str,
     output_time_scale: str,
     time_format: str,
-    delimiter: str,
+    delimiter: str | None,
     output_file,
+    column_headers: bool = False,
 ) -> None:
     """
     Print normalized orbit records.
@@ -837,31 +729,44 @@ def _print_records(
     time x_m y_m z_m vx_mps vy_mps vz_mps
     """
     columns = ["time", "x_m", "y_m", "z_m", "vx_mps", "vy_mps", "vz_mps"]
+    aligned = delimiter is None
 
+    # Průchod 1: naformátovat všechny řádky
+    rows = []
     for key in sorted(records):
         record = records[key]
-
-        values = [
+        row = [
             _format_time(
-                record["epoch"],
+                record.epoch,
                 source_time_scale=source_time_scale,
                 output_time_scale=output_time_scale,
                 time_format=time_format,
-            )
+            ),
+            _format_float(record.x),
+            _format_float(record.y),
+            _format_float(record.z),
+            _format_float(record.vx),
+            _format_float(record.vy),
+            _format_float(record.vz),
         ]
+        rows.append(row)
 
-        values.extend(
-            [
-                _format_float(record["x"]),
-                _format_float(record["y"]),
-                _format_float(record["z"]),
-                _format_float(record["vx"]),
-                _format_float(record["vy"]),
-                _format_float(record["vz"]),
-            ]
-        )
+    # Průchod 2: tisk
+    if aligned:
+        col_widths = [len(col) for col in columns]
+        for row in rows:
+            for i, val in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(val))
 
-        _write_line(output_file, delimiter.join(values))
+        if column_headers:
+            print(" ".join(col.rjust(col_widths[i]) for i, col in enumerate(columns)), file=output_file)
+        for row in rows:
+            print(" ".join(val.rjust(col_widths[i]) for i, val in enumerate(row)), file=output_file)
+    else:
+        if column_headers:
+            print(delimiter.join(columns), file=output_file)
+        for row in rows:
+            print(delimiter.join(row), file=output_file)
 
 
 # ============================================================
@@ -871,31 +776,29 @@ def _print_records(
 
 class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
     """
-    Custom help formatter: metavar is shown only once, after the long option,
-    and help text is aligned further right so all options fit on one line.
+    Custom help formatter that shows metavar only once (after the long option)
+    and aligns help text further right so all options fit on one line.
 
-    Standard argparse output:
-      -f iso|mjd, --time-format iso|mjd
-
-    This formatter produces:
-      -f, --time-format iso|mjd   Output time format (default: iso).
+    Without this class:  -f iso|mjd, --time-format iso|mjd
+    With this class:     -f, --time-format iso|mjd   Output time format.
     """
 
-    def __init__(self, prog: str) -> None:
+    def __init__(self, prog):
+        # Push help text further right (position 38) and widen the output (100 chars)
         super().__init__(prog, max_help_position=38, width=100)
 
-    def _format_action_invocation(self, action: argparse.Action) -> str:
+    def _format_action_invocation(self, action):
+        # For positional args and flags without a value (e.g. --metadata), use default formatting
         if not action.option_strings or action.nargs == 0:
             return super()._format_action_invocation(action)
-        # Collect metavar (empty string for store_true / flags without value)
-        default_metavar = self._get_default_metavar_for_optional(action)
-        metavar = self._metavar_formatter(action, default_metavar)(1)[0]
+
+        metavar = action.metavar or ""
+        shorts = [o for o in action.option_strings if not o.startswith("--")]
+        longs  = [o for o in action.option_strings if o.startswith("--")]
+
+        # Show metavar only next to the long option: -f, --time-format iso|mjd
         if metavar:
-            # Short options without metavar, long option with metavar
-            shorts = [o for o in action.option_strings if o.startswith("-") and not o.startswith("--")]
-            longs  = [o for o in action.option_strings if o.startswith("--")]
-            parts  = shorts + [f"{o} {metavar}" for o in longs]
-            return ", ".join(parts)
+            return ", ".join(shorts + [f"{o} {metavar}" for o in longs])
         return ", ".join(action.option_strings)
 
 
@@ -909,24 +812,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         prog="sp3_reader",
         usage="sp3_reader [options] SP3_FILE",
         description="Read an SP3 orbit file and write a normalised text table.",
-        epilog=(
-            "output columns:\n"
-            "  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps\n"
-            "\n"
-            "notes:\n"
-            "  positions converted from km to m\n"
-            "  velocities converted from dm/s to m/s\n"
-            "  validation warnings always printed to stderr\n"
-            "\n"
-            "examples:\n"
-            "  sp3_reader file.sp3\n"
-            "  sp3_reader file.sp3 -m              print metadata and exit\n"
-            "  sp3_reader file.sp3 -s L24          select satellite\n"
-            "  sp3_reader file.sp3 -f mjd          MJD time format\n"
-            "  sp3_reader file.sp3 -t TAI          convert time scale to TAI\n"
-            "  sp3_reader file.sp3 -d ,            comma-separated output\n"
-            "  sp3_reader file.sp3 -o out.txt      write to file"
-        ),
+        epilog="""\
+output columns:
+  time  x_m  y_m  z_m  vx_mps  vy_mps  vz_mps
+
+notes:
+  positions converted from km to m
+  velocities converted from dm/s to m/s
+  validation warnings always printed to stderr
+
+examples:
+  sp3_reader file.sp3
+  sp3_reader file.sp3 -m              print metadata and exit
+  sp3_reader file.sp3 -s L24          select satellite
+  sp3_reader file.sp3 -f mjd          MJD time format
+  sp3_reader file.sp3 -t TAI          convert time scale to TAI
+  sp3_reader file.sp3 -d ,            comma-separated output
+  sp3_reader file.sp3 -o out.txt      write to file
+  sp3_reader file.sp3 -c              print column headers
+  sp3_reader file.sp3 -d ";"          semicolon-separated output""",
         formatter_class=_HelpFormatter,
     )
 
@@ -948,7 +852,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "-s",
         "--sat",
         metavar="SAT",
-        default=None,
         help="Satellite ID to extract (required if file has multiple).",
     )
 
@@ -965,17 +868,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "-t",
         "--time-scale",
         choices=["TAI", "UTC", "GPS"],
-        default=None,
         metavar="TAI|UTC|GPS",
         help="Output time scale (default: from file header).",
     )
 
     parser.add_argument(
+        "-c",
+        "--column-headers",
+        action="store_true",
+        help="Print column names as first line of output.",
+    )
+
+    parser.add_argument(
         "-d",
         "--delimiter",
-        default=" ",
+        default=None,
         metavar="SEP",
-        help="Column separator (default: space).",
+        help="Column separator (default: aligned columns).",
     )
 
     parser.add_argument(
@@ -983,7 +892,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         metavar="FILE",
-        default=None,
         help="Output file (default: stdout).",
     )
 
@@ -1065,6 +973,7 @@ def main() -> int:
             time_format=args.time_format,
             delimiter=args.delimiter,
             output_file=output_file,
+            column_headers=args.column_headers,
         )
 
     finally:
