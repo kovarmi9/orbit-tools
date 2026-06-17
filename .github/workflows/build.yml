@@ -9,7 +9,6 @@ on:
       - 'v*'
 
 jobs:
-  # ── Windows ─────────────────────────────────────────────────
   build-windows:
     if: |
       contains(github.event.head_commit.message, '[Build]') ||
@@ -26,21 +25,28 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
 
-      - name: Build
-        run: pyinstaller --onefile sp3_reader.py
+      - name: Build all Python scripts
+        shell: pwsh
+        run: |
+          Get-ChildItem *.py | ForEach-Object {
+            Write-Host "Building $($_.Name)"
+            pyinstaller --onefile $_.Name
+          }
 
       - name: Stage
         shell: bash
         run: |
           mkdir -p bin/windows
-          cp dist/sp3_reader.exe bin/windows/sp3_reader.exe
+          for script in *.py; do
+            base=$(basename "$script" .py)
+            cp "dist/${base}.exe" "bin/windows/${base}.exe"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: build-windows
-          path: bin/windows/sp3_reader.exe
+          path: bin/windows/*
 
-  # ── Linux / Ubuntu ──────────────────────────────────────────
   build-ubuntu:
     if: |
       contains(github.event.head_commit.message, '[Build]') ||
@@ -57,20 +63,26 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
 
-      - name: Build
-        run: pyinstaller --onefile sp3_reader.py
+      - name: Build all Python scripts
+        run: |
+          for script in *.py; do
+            echo "Building $script"
+            pyinstaller --onefile "$script"
+          done
 
       - name: Stage
         run: |
           mkdir -p bin/linux/ubuntu
-          cp dist/sp3_reader bin/linux/ubuntu/sp3_reader
+          for script in *.py; do
+            base=$(basename "$script" .py)
+            cp "dist/${base}" "bin/linux/ubuntu/${base}"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: build-linux-ubuntu
-          path: bin/linux/ubuntu/sp3_reader
+          path: bin/linux/ubuntu/*
 
-  # ── Linux / Debian ──────────────────────────────────────────
   build-debian:
     if: |
       contains(github.event.head_commit.message, '[Build]') ||
@@ -91,20 +103,26 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install pyinstaller
 
-      - name: Build
-        run: .venv/bin/pyinstaller --onefile sp3_reader.py
+      - name: Build all Python scripts
+        run: |
+          for script in *.py; do
+            echo "Building $script"
+            .venv/bin/pyinstaller --onefile "$script"
+          done
 
       - name: Stage
         run: |
           mkdir -p bin/linux/debian
-          cp dist/sp3_reader bin/linux/debian/sp3_reader
+          for script in *.py; do
+            base=$(basename "$script" .py)
+            cp "dist/${base}" "bin/linux/debian/${base}"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: build-linux-debian
-          path: bin/linux/debian/sp3_reader
+          path: bin/linux/debian/*
 
-  # ── Commit binaries to repo ([Build] only) ──────────────────
   commit-binaries:
     needs: [build-windows, build-ubuntu, build-debian]
     if: contains(github.event.head_commit.message, '[Build]')
@@ -123,9 +141,9 @@ jobs:
       - name: Arrange binaries
         run: |
           mkdir -p bin/windows bin/linux/ubuntu bin/linux/debian
-          cp artifacts/build-windows/sp3_reader.exe   bin/windows/sp3_reader.exe
-          cp artifacts/build-linux-ubuntu/sp3_reader   bin/linux/ubuntu/sp3_reader
-          cp artifacts/build-linux-debian/sp3_reader   bin/linux/debian/sp3_reader
+          cp artifacts/build-windows/*       bin/windows/
+          cp artifacts/build-linux-ubuntu/*  bin/linux/ubuntu/
+          cp artifacts/build-linux-debian/*  bin/linux/debian/
 
       - name: Commit and push
         run: |
@@ -135,7 +153,6 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update binaries [skip ci]"
           git push
 
-  # ── GitHub Release (tag only) ────────────────────────────────
   release:
     needs: [build-windows, build-ubuntu, build-debian]
     if: startsWith(github.ref, 'refs/tags/')
@@ -159,6 +176,6 @@ jobs:
             --repo ${{ github.repository }} \
             --title "Release ${{ github.ref_name }}" \
             --generate-notes \
-            "artifacts/build-windows/sp3_reader.exe" \
-            "artifacts/build-linux-ubuntu/sp3_reader#sp3_reader-linux-ubuntu" \
-            "artifacts/build-linux-debian/sp3_reader#sp3_reader-linux-debian"
+            artifacts/build-windows/* \
+            artifacts/build-linux-ubuntu/* \
+            artifacts/build-linux-debian/*
