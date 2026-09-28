@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-data = np.loadtxt(Path(__file__).parent / "diff.txt", usecols=(0, 1, 2, 3),
+# Input file: first argument, or diff.txt in the current directory.
+# (Path(__file__) cannot be used: in a PyInstaller --onefile exe it points to a temp dir.)
+diff_file = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("diff.txt")
+
+data = np.loadtxt(diff_file, usecols=(0, 1, 2, 3),
                   converters={0: lambda s: __import__("datetime").datetime.fromisoformat(s).timestamp()},
                   encoding="utf-8", comments=None, skiprows=1)
 

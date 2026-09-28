@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - sp3-reader
+      - pokusy-od-ai
     tags:
       - 'v*'
 
@@ -22,8 +23,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install PyInstaller and dependencies
+        run: pip install pyinstaller numpy matplotlib
 
       - name: Build all Python scripts
         shell: pwsh
@@ -60,8 +61,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install PyInstaller and dependencies
+        run: pip install pyinstaller numpy matplotlib
 
       - name: Build all Python scripts
         run: |
@@ -98,10 +99,10 @@ jobs:
           apt-get update
           apt-get install -y python3 python3-pip python3-venv binutils
 
-      - name: Install PyInstaller
+      - name: Install PyInstaller and dependencies
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install pyinstaller
+          .venv/bin/pip install pyinstaller numpy matplotlib
 
       - name: Build all Python scripts
         run: |
