@@ -5,6 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from interp import METHODS, get_method
 from interp.io import read_orbit, read_times, write_positions
 
@@ -71,10 +73,12 @@ output columns:
 notes:
   both files must use the same time scale (sp3_reader -t)
   --nodes and --degree are two ways to set the same thing; give either one
+  DATA_FILE may have only time x y z columns for position-only methods (--list-methods)
 
 examples:
   orbit_interpolate data.txt reference.txt
   orbit_interpolate data.txt reference.txt -m hermite -g 7     degree 7 (4 nodes)
+  orbit_interpolate data.txt reference.txt -m lagrange -g 9    positions only, degree 9 (10 nodes)
   orbit_interpolate data.txt reference.txt -n 8                8 nodes
   orbit_interpolate data.txt reference.txt -c                  print column headers
   orbit_interpolate data.txt reference.txt -d ";"              semicolon-separated output
@@ -171,13 +175,22 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    settings = f"method={method.name} nodes={nodes} degree={degree}"
+    settings = f"method={method.name} nodes={'all' if nodes is None else nodes} degree={degree}"
 
     # --- read data trajectory ---
     try:
         t_data, r_data, v_data = read_orbit(args.data_file, args.delimiter)
     except (OSError, ValueError) as exc:
         print(f"Error reading DATA_FILE: {exc}", file=sys.stderr)
+        return 1
+
+    if method.uses_velocity and not np.isfinite(v_data).all(axis=1).any():
+        position_only = [m.name for m in METHODS.values() if not m.uses_velocity]
+        print(
+            f"Error: method {method.name!r} needs velocities, but DATA_FILE has none "
+            f"(position-only methods: {', '.join(position_only)}).",
+            file=sys.stderr,
+        )
         return 1
 
     # --- read reference times ---

@@ -10,8 +10,9 @@ import numpy as np
 # Method registry
 # ============================================================
 
-# resolve(nodes, degree) -> (nodes, degree); either input may be None (= use default)
-Resolver = Callable[[int | None, int | None], tuple[int, int]]
+# resolve(nodes, degree) -> (nodes, degree); either input may be None (= use default).
+# Returned nodes is None for global methods, which use all data points.
+Resolver = Callable[[int | None, int | None], tuple[int | None, int]]
 
 # run(t, r, v, t_query, *, nodes, degree) -> ndarray (Q, 3), NaN where not computed
 Runner = Callable[..., np.ndarray]
@@ -92,5 +93,22 @@ def tied_degree(
             raise ValueError(f"nodes must be >= {min_nodes} (got {nodes})")
 
         return nodes, degree_of(nodes)
+
+    return resolve
+
+
+def fixed_degree(degree: int, *, method: str) -> Resolver:
+    """
+    Resolver for global methods with a fixed degree (e.g. cubic spline).
+
+    There is no node window, so --nodes is rejected and --degree may only
+    repeat the fixed value.
+    """
+    def resolve(nodes: int | None, deg: int | None) -> tuple[None, int]:
+        if nodes is not None:
+            raise ValueError(f"{method} uses all data points; --nodes does not apply")
+        if deg is not None and deg != degree:
+            raise ValueError(f"{method} degree is fixed at {degree} (got {deg})")
+        return None, degree
 
     return resolve

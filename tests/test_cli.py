@@ -147,6 +147,51 @@ def test_epochs_outside_data_are_skipped_with_warning(tmp_path):
 
 
 # ============================================================
+# Position-only data
+# ============================================================
+
+@pytest.fixture(scope="module")
+def position_only_data(tmp_path_factory) -> Path:
+    """DATA with the velocity columns removed (time x y z)."""
+    out = tmp_path_factory.mktemp("pos") / "ssa_pos.txt"
+    lines = [" ".join(ln.split()[:4]) for ln in DATA.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+def test_lagrange_accepts_position_only_data(position_only_data):
+    """Lagrange ignores velocities, so dropping them does not change the result."""
+    full = _ok(DATA, REFERENCE, "-m", "lagrange")
+    pos_only = _ok(position_only_data, REFERENCE, "-m", "lagrange")
+
+    assert _rows(pos_only) == _rows(full)
+    assert len(_rows(full)) == EPOCHS
+
+
+def test_lagrange_differs_from_hermite(default_rows):
+    """Sanity check that -m really switches the method."""
+    assert _rows(_ok(DATA, REFERENCE, "-m", "lagrange")) != default_rows
+
+
+def test_spline_accepts_position_only_data(position_only_data):
+    full = _ok(DATA, REFERENCE, "-m", "spline")
+    pos_only = _ok(position_only_data, REFERENCE, "-m", "spline")
+
+    assert _rows(pos_only) == _rows(full)
+    assert len(_rows(full)) == EPOCHS
+    assert full.splitlines()[0] == "# orbit_interpolate method=spline nodes=all degree=3"
+
+
+def test_hermite_rejects_position_only_data(position_only_data):
+    result = _cli(position_only_data, REFERENCE, "-m", "hermite")
+
+    assert result.returncode == 1
+    assert "method 'hermite' needs velocities, but DATA_FILE has none" in result.stderr
+    assert "position-only methods: lagrange, spline" in result.stderr
+    assert result.stdout == ""
+
+
+# ============================================================
 # Informational options
 # ============================================================
 
@@ -155,6 +200,8 @@ def test_list_methods_needs_no_files():
 
     assert result.returncode == 0
     assert re.search(r"^\s*hermite\s+pos\+vel\s", result.stdout, re.MULTILINE)
+    assert re.search(r"^\s*lagrange\s+pos\s", result.stdout, re.MULTILINE)
+    assert re.search(r"^\s*spline\s+pos\s", result.stdout, re.MULTILINE)
 
 
 def test_help():
@@ -175,7 +222,9 @@ def test_help():
         (["-g", "8"],             "degree must be an odd number >= 3"),
         (["-n", "1"],             "nodes must be >= 2"),
         (["-n", "4", "-g", "11"], "inconsistent"),
-        (["-m", "lagrange"],      "unknown method 'lagrange' (available: hermite)"),
+        (["-m", "no-such"],       "unknown method 'no-such' (available: hermite, lagrange, spline)"),
+        (["-m", "spline", "-n", "6"], "spline uses all data points; --nodes does not apply"),
+        (["-m", "spline", "-g", "5"], "spline degree is fixed at 3"),
         (["-n", "20000"],         "Error during interpolation: Not enough points"),
     ],
 )

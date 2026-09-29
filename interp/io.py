@@ -66,7 +66,7 @@ def read_orbit(source, delimiter: str | None):
     -------
     t : ndarray (N,)   - seconds since MJD epoch
     r : ndarray (N,3)  - position [m]
-    v : ndarray (N,3)  - velocity [m/s]
+    v : ndarray (N,3)  - velocity [m/s], NaN if the line has no velocity columns
     """
     sep = delimiter
     name = _source_name(source)
@@ -78,15 +78,19 @@ def read_orbit(source, delimiter: str | None):
     t_list, r_list, v_list = [], [], []
     for ln in lines:
         cols = ln.split(sep)
-        if len(cols) < 7:
+        if len(cols) < 4:
             print(f"Warning: skipping short line: {ln!r}", file=sys.stderr)
             continue
         try:
-            t_list.append(parse_t(cols[0]))
-            r_list.append([float(cols[1]), float(cols[2]), float(cols[3])])
-            v_list.append([float(cols[4]), float(cols[5]), float(cols[6])])
+            t_i = parse_t(cols[0])
+            r_i = [float(cols[1]), float(cols[2]), float(cols[3])]
+            v_i = [float(c) for c in cols[4:7]] if len(cols) >= 7 else [float("nan")] * 3
         except (ValueError, IndexError) as exc:
             print(f"Warning: skipping unparseable line ({exc}): {ln!r}", file=sys.stderr)
+            continue
+        t_list.append(t_i)
+        r_list.append(r_i)
+        v_list.append(v_i)
     if not t_list:
         raise ValueError(f"No valid records parsed from {name}.")
     return (

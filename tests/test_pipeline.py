@@ -90,3 +90,59 @@ def test_hermite_accuracy_on_real_orbit(nodes):
     assert err_mm.size > 5000
     assert np.sqrt(np.mean(err_mm**2)) < 1.0
     assert np.median(err_mm) < 1.0
+
+
+@pytest.mark.parametrize("nodes, rms_limit", [(8, 7.0), (10, 6.0), (12, 6.0)])
+def test_lagrange_accuracy_on_real_orbit(nodes, rms_limit):
+    """
+    Same thinning test for Lagrange (positions only).
+
+    Lagrange stays at a few mm (measured RMS 5.4 / 4.6 / 4.2 mm for 8 / 10 / 12 nodes):
+    positions alone at 120 s cannot resolve the short-period part of the LEO orbit,
+    which Hermite recovers from the velocities. Also checks Lagrange is not better
+    than Hermite here, i.e. that the comparison between methods is meaningful.
+    """
+    t, r, v = read_orbit(REPO / "test_ssa_gps.txt", None)
+    keep = np.zeros(t.size, dtype=bool)
+    keep[::2] = True
+
+    def rms_mm(name, n):
+        method = get_method(name)
+        _, degree = method.resolve(n, None)
+        pred = method.run(t[keep], r[keep], v[keep], t[~keep], nodes=n, degree=degree)
+        err = np.linalg.norm(pred - r[~keep], axis=1) * 1000.0
+        err = err[np.isfinite(err)]
+        assert err.size > 5000
+        return np.sqrt(np.mean(err**2))
+
+    lagrange = rms_mm("lagrange", nodes)
+
+    assert lagrange < rms_limit
+    assert lagrange > rms_mm("hermite", 6)
+
+
+def test_spline_accuracy_on_real_orbit():
+    """
+    Same thinning test for the cubic spline.
+
+    A cubic between neighbouring epochs is far too low an order for an orbit:
+    the error is metres, not millimetres (measured RMS ~5.0 m at 120 s).
+    Checks both the level and that spline ranks below Lagrange here.
+    """
+    t, r, v = read_orbit(REPO / "test_ssa_gps.txt", None)
+    keep = np.zeros(t.size, dtype=bool)
+    keep[::2] = True
+
+    def rms_mm(name):
+        method = get_method(name)
+        nodes, degree = method.resolve(None, None)
+        pred = method.run(t[keep], r[keep], v[keep], t[~keep], nodes=nodes, degree=degree)
+        err = np.linalg.norm(pred - r[~keep], axis=1) * 1000.0
+        err = err[np.isfinite(err)]
+        assert err.size > 5000
+        return np.sqrt(np.mean(err**2))
+
+    spline = rms_mm("spline")
+
+    assert 1000.0 < spline < 6000.0  # mm
+    assert spline > rms_mm("lagrange")
